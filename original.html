@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<title>Agent</title>
+	<meta charset="utf-8">
+ <style>
+	body {
+		background-color: #fff;
+		color: #111;
+		margin: 0px;
+		overflow: hidden;
+		font-family: Monospace;
+		font-size: 20px;
+		position: absolute;
+	}
+	#info {
+		position: absolute;
+		top: 0px; width: 100%;
+		
+		padding: 5px;
+		text-align: center;
+		color: #ffff00
+	}
+	strong {color:red}
+</style>
+</head>
+
+
+<body>
+
+<div id="info">
+Agent<br>
+Seek, Collision, Arrival<br>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/85/three.min.js"></script>
+<script src="https://threejs.org/examples/js/controls/OrbitControls.js">
+</script>
+
+<script>
+var MAXSPEED = 25, MAXFORCE = 25;
+var REACH = 50;
+var ARRIVAL_R = 30;
+
+var SceneSystem = function (scene) {
+	this.obstacles = [];
+	this.agents = [];
+	this.scene = scene;  // allocated in init()
+	
+	this.addObstacle = function (center, size) {
+		var ob = new Obstacle(center, size);
+		this.obstacles.push (ob);
+		this.scene.add (ob.mesh);
+	};
+	
+	this.addAgent = function (pos, vel) {
+		var ag = new Agent (pos, vel, this);
+		this.scene.add (ag.mesh);
+		this.agents.push (ag);
+	};
+	
+	this.update = function (dt) {
+		this.agents.forEach (function (agent) {
+			agent.step(dt);
+			agent.mesh.position.copy (agent.pos);
+		});
+	};
+	
+	this.setTarget = function (target) {
+		this.agents.forEach (function (agent) {
+			agent.target.copy (target);
+		});
+	}
+}
+
+var Obstacle = function (center,size) {
+	this.center = center.clone();  
+	this.mesh = new THREE.Mesh (new THREE.CylinderGeometry(size,size,1,20),
+			new THREE.MeshBasicMaterial());
+	this.mesh.position.copy (center);
+	this.size = size;
+};
+
+var Agent = function (pos, vel, sys) {
+	this.pos = pos || new THREE.Vector3();
+	this.vel = vel || new THREE.Vector3();
+	this.sys = sys;
+	this.force = new THREE.Vector3();
+	this.target = new THREE.Vector3();
+	this.size = 3;  // physical size of the character
+	this.mesh = new THREE.Mesh (new THREE.CylinderGeometry(3,3,1,20),
+			new THREE.MeshBasicMaterial({color:0xff0000}));
+};
+
+Agent.prototype = {
+  render: function() {
+  },
+  step: function (dt) {
+	this.accumForce();
+	
+	// vel += force*dt
+	var tmp = this.force.clone().multiplyScalar(dt);
+	this.vel.add (tmp);  
+
+	// velocity modulation by arriving
+	var diff = new THREE.Vector3();
+	diff.subVectors (this.target, this.pos);
+	var dst = diff.length();
+	if (dst < ARRIVAL_R) {
+		this.vel.setLength (dst);	
+	}
+	
+	// pos += vel*dt
+	tmp = this.vel.clone().multiplyScalar (dt);
+	this.pos.add (tmp); 
+  },
+
+  accumForce:  function () {
+	// clear force accumulator
+	this.force.set (0,0,0);
+	
+	var sum = new THREE.Vector3(0,0,0);
+	
+	// seek
+	var tmp = new THREE.Vector3();
+	tmp.subVectors (this.target, this.pos);
+	tmp.normalize().multiplyScalar (MAXSPEED);
+	sum.subVectors (tmp, this.vel);
+
+	// collision
+	var vhat = this.vel.clone().normalize();
+	
+	for (var i = 0; i < this.sys.obstacles.length; i++) {
+	  // many obstacles, pick the most threatening one
+	  var ob = this.sys.obstacles[i];
+	  tmp.subVectors (ob.center, this.pos); // c-p
+	  var tll = tmp.dot(vhat);
+
+	  if (tll > 0 && tll < REACH) {
+		vhat.multiplyScalar (tll);
+		var tperp = new THREE.Vector3();
+		tperp.subVectors (tmp, vhat);
+		if (tperp.length() < ob.size+this.size) {
+			tperp.negate();
+			sum.add (tperp);
+			console.log ("hit", tperp);
+		}
+	  }
+	}
+	
+	this.force.copy (sum);
+  },
+}
+
+// standard global variables
+var scene, camera, renderer, controls;
+var clock = new THREE.Clock();
+
+init();
+animate();
+
+// agent stuff
+var sys;
+
+// picking
+var mouse = new THREE.Vector2(), plane;
+var tracer = new THREE.Vector3();
+var raycaster;
+
+// FUNCTIONS 		
+function init(){
+
+	// SCENE
+	scene = new THREE.Scene();
+
+	// build up system
+	sys = new SceneSystem (scene);
+	sys.addObstacle ( new THREE.Vector3 (20,0,30),20 );
+	sys.addAgent ( new THREE.Vector3 (0,0,0), new THREE.Vector3(10,0,-5));
+
+	////////////////////////////////////////////////////////////////////////////////
+	// CAMERA
+	var SCREEN_WIDTH = window.innerWidth, SCREEN_HEIGHT = window.innerHeight;
+	var VIEW_ANGLE = 45, ASPECT = SCREEN_WIDTH / SCREEN_HEIGHT, NEAR = 0.1, FAR = 20000;
+	camera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR);
+	scene.add(camera);
+	camera.position.set(0,150,400);
+	camera.lookAt(scene.position);	
+	
+	renderer = new THREE.WebGLRenderer( {antialias:true} );
+	renderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+	renderer.setClearColor (0x888888);
+	
+	document.body.appendChild ( renderer.domElement );
+
+	// CONTROLS
+	controls = new THREE.OrbitControls( camera, renderer.domElement );
+
+	var gridXZ = new THREE.GridHelper(100, 10, 'red', 'white');
+	scene.add(gridXZ);
+
+	// for picking
+	plane = new THREE.Mesh(
+		new THREE.PlaneBufferGeometry( 200, 200, 8, 8 ),
+		new THREE.MeshBasicMaterial( { color: 0xff0000, opacity: 0.25, transparent: true } )
+	);
+	plane.rotation.x = -Math.PI/2;
+	plane.material.visible = true;   // invisible, for picking only
+	scene.add( plane );
+
+	// LIGHT
+	var light = new THREE.PointLight(0xffffff);
+	light.position.set(0,250,0);
+	scene.add(light);
+
+	window.addEventListener ('resize', onWindowResize, false);	
+	window.addEventListener( 'mousemove', onDocumentMouseMove, false );
+	raycaster = new THREE.Raycaster();
+}
+
+function animate() {
+
+	controls.update();
+	var dt = clock.getDelta();
+	
+	sys.update (dt);
+	
+	requestAnimationFrame( animate );
+	renderer.render( scene, camera );
+}
+
+function onWindowResize() {
+	camera.aspect = window.innerWidth / window.innerHeight;
+	camera.updateProjectionMatrix();
+	renderer.setSize (window.innerWidth, window.innerHeight);
+}
+
+
+function onDocumentMouseMove( event ) {
+	event.preventDefault();
+	mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
+	mouse.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
+  	raycaster.setFromCamera(mouse, camera);
+  
+	var intersects = raycaster.intersectObject( plane );
+	if (intersects.length > 0) {
+		var move = intersects[0].point.clone();
+		tracer.copy (move);
+		//agent.target.copy (move);
+		sys.setTarget (move);
+	}
+}
+
+</script>
+
+</body>
+</html>
